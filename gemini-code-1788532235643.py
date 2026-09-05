@@ -1,340 +1,241 @@
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
-import math
-import datetime
+import streamlit.components.v1 as components
 
-# -----------------------------------------------------------------------------
-# 1. CONFIGURACIÓN INICIAL DE LA APLICACIÓN
-# -----------------------------------------------------------------------------
+# Configuración inicial de la página
 st.set_page_config(
-    page_title="RutaCarga - Sistema de Navegación Pesada",
-    layout="wide",
-    page_icon="🚛"
+    page_title="RutaCarga Aburrá - Navegador GPS",
+    page_icon="🚛",
+    layout="wide"
 )
 
-# -----------------------------------------------------------------------------
-# 2. BASES DE DATOS SIMULADAS (MEDELLÍN Y ÁREA METROPOLITANA)
-# -----------------------------------------------------------------------------
-# Puntos clave del corredor vial del Valle de Aburrá
-PUNTOS_UBICACION = {
-    "Caldas (Entrada Sur)": [6.0910, -75.6350],
-    "Sabaneta (Zona Industrial / Mayorista)": [6.1500, -75.6150],
-    "Medellín - Parques del Río / Soterrado": [6.2442, -75.5736],
-    "Bello (Zona Industrial Norte)": [6.3300, -75.5550],
-    "Girardota (Peaje Cabildo / Parque Ind.)": [6.3750, -75.4450]
+st.title("🚚 RutaCarga: Navegador GPS para Carga Pesada")
+st.caption("Navegación en tiempo real, restricciones de gálibo/peso y servicios en ruta para el Valle de Aburrá.")
+
+# --- COMPONENTE DE GEOLOCALIZACIÓN GPS (JavaScript) ---
+def obtener_ubicacion_gps():
+    html_gps = """
+    <script>
+    function getLocation() {
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(showPosition, showError);
+      } else {
+        alert("La geolocalización no es soportada por este navegador.");
+      }
+    }
+    function showPosition(position) {
+      const lat = position.coords.latitude;
+      const lon = position.coords.longitude;
+      window.parent.postMessage({
+        type: 'streamlit:setComponentValue',
+        value: {lat: lat, lon: lon}
+      }, '*');
+    }
+    function showError(error) {
+      alert("Error al obtener ubicación: " + error.message);
+    }
+    </script>
+    <button onclick="getLocation()" style="
+        background-color: #ff4b4b;
+        color: white;
+        border: none;
+        padding: 10px 18px;
+        border-radius: 8px;
+        font-weight: bold;
+        cursor: pointer;
+        width: 100%;
+        margin-bottom: 10px;
+    ">📍 Obtener Mi Ubicación Actual (GPS)</button>
+    """
+    return components.html(html_gps, height=60)
+
+# --- ESTADOS DE SESIÓN PARA UBICACIÓN ---
+if "user_lat" not in st.session_state:
+    st.session_state.user_lat = 6.1500  # Latitud por defecto (Itagüí / Sabaneta)
+if "user_lon" not in st.session_state:
+    st.session_state.user_lon = -75.6150  # Longitud por defecto
+
+# --- BARRA LATERAL: CONFIGURACIÓN DEL VEHÍCULO ---
+st.sidebar.header("⚙️ Especificaciones del Vehículo")
+tipo_vehiculo = st.sidebar.selectbox(
+    "Configuración",
+    ["C2 (Rígido 2 ejes)", "C3 (Rígido 3 ejes)", "C3S2 (Tractocamión)", "C3S3 (Tractocamión 6 ejes)"]
+)
+peso_toneladas = st.sidebar.slider("Peso Bruto (Toneladas)", min_value=3.0, max_value=52.0, value=18.0, step=0.5)
+altura_metros = st.sidebar.slider("Altura Total (Metros)", min_value=2.0, max_value=4.5, value=3.9, step=0.1)
+
+st.sidebar.markdown("---")
+st.sidebar.header("🎯 Capas del Mapa")
+mostrar_pois = st.sidebar.checkbox("Mostrar POIs (Parqueaderos/Talleres)", value=True)
+mostrar_restricciones = st.sidebar.checkbox("Mostrar Restricciones de Altura", value=True)
+mostrar_alertas = st.sidebar.checkbox("Mostrar Reportes Comunidad", value=True)
+
+# --- NAVEGACIÓN DE MÓDULOS ---
+opcion_menu = st.radio(
+    "Módulos del Sistema:",
+    ["🧭 Navegador GPS & Rutas", "📢 Reportar Novedad", "🏪 Registro de Comercios", "💳 Planes & Monetización"],
+    horizontal=True
+)
+
+# --- DATOS BASE DE INFRAESTRUCTURA Y POIs ---
+destinos_aburra = {
+    "Zona Industrial Sabaneta": [6.1500, -75.6150],
+    "Zona Industrial Itagüí": [6.1720, -75.6080],
+    "Centro de Logística Medellín (Sur)": [6.2100, -75.5800],
+    "Terminal de Carga Bello / Niquía": [6.3300, -75.5500],
+    "Parque Industrial Girardota": [6.3750, -75.4450]
 }
 
-# Vías estructuradas con restricciones de gálibo (altura), peso y número de ejes
-VIAS_METROPOLITANAS = [
-    {
-        "nombre": "Avenida Regional / Autopista Sur (Corredor Principal)",
-        "coordenadas": [[6.1500, -75.6150], [6.2442, -75.5736], [6.3300, -75.5550]],
-        "max_ejes": 6,
-        "max_peso_ton": 52.0,
-        "max_altura_m": 4.6,
-        "peajes_en_tramo": 0
-    },
-    {
-        "nombre": "Soterrado Parques del Río (Restricción Severa de Altura)",
-        "coordenadas": [[6.2400, -75.5760], [6.2460, -75.5740]],
-        "max_ejes": 6,
-        "max_peso_ton": 52.0,
-        "max_altura_m": 4.1,  # Gálibo limitado
-        "peajes_en_tramo": 0
-    },
-    {
-        "nombre": "Avenida El Poblado (Restricción Urbana / Zonas de Cargue)",
-        "coordenadas": [[6.1750, -75.5900], [6.2100, -75.5710]],
-        "max_ejes": 2,
-        "max_peso_ton": 10.0,
-        "max_altura_m": 3.8,
-        "peajes_en_tramo": 0
-    },
-    {
-        "nombre": "Variante a Caldas - Salida a Nariño/Eje Cafetero",
-        "coordenadas": [[6.0910, -75.6350], [6.1400, -75.6200]],
-        "max_ejes": 6,
-        "max_peso_ton": 52.0,
-        "max_altura_m": 4.8,
-        "peajes_en_tramo": 1
-    }
+pois_data = [
+    {"nombre": "Parqueadero Carga Pesada Sabaneta", "tipo": "Parqueadero", "lat": 6.1500, "lon": -75.6150, "detalles": "Seguridad 24/7, Capacidad 40 mulas"},
+    {"nombre": "Restaurante El Camionero (Girardota)", "tipo": "Restaurante", "lat": 6.3750, "lon": -75.4450, "detalles": "Espacio amplio, duchas"},
+    {"nombre": "TecniCamiones Itagüí", "tipo": "Taller", "lat": 6.1720, "lon": -75.6080, "detalles": "Mecánica diésel y frenos"},
+    {"nombre": "EDS Texaco Autopista Sur", "tipo": "Combustible", "lat": 6.1950, "lon": -75.5900, "detalles": "ACPM, alto gálibo"}
 ]
 
-# Puntos de Servicio (Hoteles, Restaurantes, Parqueaderos con convenio)
-if "puntos_interes" not in st.session_state:
-    st.session_state.puntos_interes = [
-        {
-            "nombre": "Parqueadero & Taller El Camionero - Caldas",
-            "tipo": "Parqueadero / Taller",
-            "lat": 6.0950,
-            "lon": -75.6320,
-            "destacado": True,
-            "descripcion": "Espacio para 40 tractomulas, vigilado 24/7, restaurante y duchas."
-        },
-        {
-            "nombre": "Restaurante La Parada del C3 - Girardota",
-            "tipo": "Restaurante",
-            "lat": 6.3750,
-            "lon": -75.4450,
-            "destacado": True,
-            "descripcion": "Menú ejecutivo, amplio parqueadero con fácil maniobrabilidad."
-        },
-        {
-            "nombre": "Hotel El Transportador - Copacabana",
-            "tipo": "Hotel",
-            "lat": 6.3450,
-            "lon": -75.5100,
-            "destacado": False,
-            "descripcion": "Habitaciones con bahía de parqueo privada vigilada."
-        }
-    ]
+restricciones_data = [
+    {"nombre": "Puente La Aguacatala", "lat": 6.1980, "lon": -75.5780, "max_altura": 3.6, "detalles": "Gálibo máximo 3.6m"},
+    {"nombre": "Puente Pandequeso (Envigado)", "lat": 6.1750, "lon": -75.5910, "max_altura": 4.0, "detalles": "Gálibo máximo 4.0m"}
+]
 
-# Estado global para alertas reportadas por la comunidad (Tipo Waze)
-if "reportes_comunidad" not in st.session_state:
-    st.session_state.reportes_comunidad = [
-        {"tipo": "Báscula de Pesaje Activa", "lat": 6.3600, "lon": -75.4700, "detalle": "Control de peso de la Secretaría de Movilidad"},
-        {"tipo": "Vehículo Varado en Vía", "lat": 6.2200, "lon": -75.5800, "detalle": "Mula varada carril derecho en Autopista Sur"}
-    ]
+alertas_comunidad = [
+    {"tipo": "Control / Fotomulta", "lat": 6.2100, "lon": -75.5720, "descripcion": "Radar de velocidad activo"},
+    {"tipo": "Congestión Alta", "lat": 6.3300, "lon": -75.5550, "descripcion": "Obras en la vía a Bello"}
+]
 
-# -----------------------------------------------------------------------------
-# 3. FUNCIONES DE CÁLCULO
-# -----------------------------------------------------------------------------
-def calcular_distancia(coord1, coord2):
-    """Calcula distancia euclidiana aproximada en kilómetros (Haversine)."""
-    R = 6371.0
-    lat1, lon1 = math.radians(coord1[0]), math.radians(coord1[1])
-    lat2, lon2 = math.radians(coord2[0]), math.radians(coord2[1])
-    dlat, dlon = lat2 - lat1, lon2 - lon1
-    a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
-    return round(R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)), 1)
+# --- MÓDULO 1: NAVEGADOR GPS ---
+if "Navegador" in opcion_menu:
+    col_controles, col_mapa = st.columns([1, 2])
 
-def estimar_costos(distancia_km, tipo_vehiculo):
-    """Estima costo de peajes y combustible (ACPM) según categoría."""
-    if "C2" in tipo_vehiculo:
-        galon_por_km = 0.12  # ~8.3 km por galón
-        precio_peaje_promedio = 15000
-    elif "C3" in tipo_vehiculo:
-        galon_por_km = 0.18  # ~5.5 km por galón
-        precio_peaje_promedio = 22000
-    else:  # C3S3
-        galon_por_km = 0.25  # ~4.0 km por galón
-        precio_peaje_promedio = 35000
-
-    precio_acpm_galon = 9800  # Valor promedio estimado en COP
-    costo_acpm = int(distancia_km * galon_por_km * precio_acpm_galon)
-    
-    # Simulación de un peaje estándar según distancia
-    num_peajes = 1 if distancia_km > 20 else 0
-    costo_peajes = num_peajes * precio_peaje_promedio
-
-    return costo_acpm, costo_peajes, costo_acpm + costo_peajes
-
-# -----------------------------------------------------------------------------
-# 4. PANEL LATERAL DE CONTROL
-# -----------------------------------------------------------------------------
-st.sidebar.title("🚛 RutaCarga App")
-st.sidebar.markdown("**Área Metropolitana de Medellín**")
-
-menu = st.sidebar.radio("Módulos del Sistema", [
-    "🗺️ Mapa & Calculadora de Rutas",
-    "⚠️ Reportar Novedad (Comunidad)",
-    "🏬 Registro de Comercios",
-    "💳 Suscripción & Comercial"
-])
-
-# Parámetros globales del vehículo
-st.sidebar.markdown("---")
-st.sidebar.subheader("🚚 Ficha del Vehículo")
-tipo_vehiculo = st.sidebar.selectbox("Configuración de Carga", ["C2 (Sencillo)", "C3 (Doble Troque)", "C3S3 (Tractomula)"])
-placa_ultimo_digito = st.sidebar.number_input("Último Dígito de Placa", min_value=0, max_value=9, value=5)
-ejes = st.sidebar.slider("Número de Ejes", 2, 6, 6 if "C3S3" in tipo_vehiculo else (3 if "C3" in tipo_vehiculo else 2))
-peso_total = st.sidebar.number_input("Peso Bruto Total (Toneladas)", 2.0, 52.0, 38.0, 1.0)
-altura_vehiculo = st.sidebar.number_input("Altura Total (Metros)", 2.0, 4.8, 4.3, 0.1)
-
-# -----------------------------------------------------------------------------
-# 5. MÓDULO 1: MAPA Y CALCULADORA DE RUTAS
-# -----------------------------------------------------------------------------
-if menu == "🗺️ Mapa & Calculadora de Rutas":
-    st.title("Navegación Inteligente para Vehículos de Carga")
-    st.caption("Planificación automatizada según restricciones de infraestructura, pico y placa y costos aproximados.")
-
-    # Alerta de Pico y Placa / Restricción de Carga Ambiental
-    dia_actual = datetime.datetime.now().strftime("%A")
-    # Regla simulada para el prototipo
-    pico_y_placa_activo = (placa_ultimo_digito in [4, 5, 6, 7])
-    
-    if pico_y_placa_activo:
-        st.warning(f"⚠️ **Restricción Ambiental / Movilidad:** La placa terminada en **{placa_ultimo_digito}** tiene restricción de circulación de 06:00 a 08:30 y 17:00 a 19:30 en vías urbanas del Valle de Aburrá. Utiliza preferencialmente la Avenida Regional.")
-
-    # Selección de Origen y Destino
-    col_a, col_b = st.columns(2)
-    with col_a:
-        origen_nombre = st.selectbox("Punto de Origen (A)", list(PUNTOS_UBICACION.keys()), index=0)
-    with col_b:
-        destino_nombre = st.selectbox("Punto de Destino (B)", list(PUNTOS_UBICACION.keys()), index=3)
-
-    coord_origen = PUNTOS_UBICACION[origen_nombre]
-    coord_destino = PUNTOS_UBICACION[destino_nombre]
-    distancia_km = calcular_distancia(coord_origen, coord_destino)
-    costo_acpm, costo_peajes, costo_total = estimar_costos(distancia_km, tipo_vehiculo)
-
-    # Panel de Métricas Rápidas
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Distancia Estimada", f"{distancia_km} km")
-    m2.metric("Costo ACPM Aprox.", f"${costo_acpm:,} COP")
-    m3.metric("Peajes Estimados", f"${costo_peajes:,} COP")
-    m4.metric("Costo Operativo Ruta", f"${costo_total:,} COP")
-
-    # Evaluación de Viabilidad en la Ruta
-    vias_no_aptas = []
-    for via in VIAS_METROPOLITANAS:
-        if altura_vehiculo > via["max_altura_m"]:
-            vias_no_aptas.append(f"{via['nombre']} (Supera gálibo de {via['max_altura_m']}m)")
-        elif peso_total > via["max_peso_ton"]:
-            vias_no_aptas.append(f"{via['nombre']} (Supera límite de peso de {via['max_peso_ton']} Ton)")
-        elif ejes > via["max_ejes"]:
-            vias_no_aptas.append(f"{via['nombre']} (Supera ejes permitidos: {via['max_ejes']})")
-
-    if vias_no_aptas:
-        st.error("🚨 **Atención: Se detectaron restricciones en la ruta estándar:**")
-        for restriccion in vias_no_aptas:
-            st.write(f"- {restriccion}")
-    else:
-        st.success("✅ **Ruta 100% Apta:** Sin restricciones de gálibo ni peso para tu configuración actual.")
-
-    # Generación del Mapa Interactivo (Folium)
-    m = folium.Map(location=[6.2442, -75.5736], zoom_start=11)
-
-    # Trazado directo entre Origen y Destino
-    folium.Marker(coord_origen, popup=f"Origen: {origen_nombre}", icon=folium.Icon(color="green", icon="play")).add_to(m)
-    folium.Marker(coord_destino, popup=f"Destino: {destino_nombre}", icon=folium.Icon(color="red", icon="stop")).add_to(m)
-    folium.PolyLine([coord_origen, coord_destino], color="blue", weight=3, opacity=0.6, dash_array="5, 10").add_to(m)
-
-    # Dibujar estado de vías
-    for via in VIAS_METROPOLITANAS:
-        es_transitable = (altura_vehiculo <= via["max_altura_m"]) and (peso_total <= via["max_peso_ton"]) and (ejes <= via["max_ejes"])
-        color_linea = "green" if es_transitable else "red"
+    with col_controles:
+        st.subheader("📍 Configurar Navegación")
+        st.write("1. Haz clic abajo para detectar tu posición exacta:")
         
-        popup_html = f"<b>{via['nombre']}</b><br>Estado: {'APTA' if es_transitable else 'RESTRINGIDA'}<br>Máx Altura: {via['max_altura_m']}m | Máx Peso: {via['max_peso_ton']} Ton"
-        
-        folium.PolyLine(
-            via["coordenadas"],
-            color=color_linea,
-            weight=6,
-            opacity=0.8,
-            popup=popup_html,
-            tooltip=f"{via['nombre']} ({'Permitida' if es_transitable else 'No permitida'})"
-        ).add_to(m)
+        # Botón para capturar GPS del teléfono
+        gps_datos = obtener_ubicacion_gps()
+        if gps_datos and isinstance(gps_datos, dict) and "lat" in gps_datos:
+            st.session_state.user_lat = gps_datos["lat"]
+            st.session_state.user_lon = gps_datos["lon"]
+            st.success(f"📍 Ubicación detectada: Lat {st.session_state.user_lat:.4f}, Lon {st.session_state.user_lon:.4f}")
 
-    # Dibujar Puntos de Interés
-    for poi in st.session_state.puntos_interes:
-        color_icono = "gold" if poi["destacado"] else "blue"
+        st.write("2. Selecciona tu Destino:")
+        destino_seleccionado = st.selectbox("Destino en el Valle de Aburrá", list(destinos_aburra.keys()))
+        dest_lat, dest_lon = destinos_aburra[destino_seleccionado]
+
+        st.markdown("---")
+        st.subheader("⚠️ Análisis de Seguridad en Ruta")
+        
+        # Validación de Altura
+        alerta_galibo = False
+        if altura_metros > 3.6:
+            st.error(f"❌ **Ruta no apta por gálibo:** Su vehículo ({altura_metros}m) excede el Puente La Aguacatala (3.6m).")
+            st.warning("🔄 **Desvío Sugerido:** Tomar la Vía Regional por el carril oriental.")
+            alerta_galibo = True
+        else:
+            st.success("✅ Vehículo dentro del límite de gálibo permitido para el trayecto.")
+
+        st.markdown("---")
+        st.subheader("💰 Estimación de Costos")
+        distancia_estimada_km = 22.0
+        precio_galon_acpm = 10150
+        consumo_galones = distancia_estimada_km / (6.5 if peso_toneladas > 20 else 9.0)
+        costo_combustible = consumo_galones * precio_galon_acpm
+        peajes = 16500 if "Tractocamión" in tipo_vehiculo else 9800
+
+        st.write(f"• **Distancia:** ~{distancia_estimada_km} km")
+        st.write(f"• **ACPM Estimado:** {consumo_galones:.1f} gal (${costo_combustible:,.0f} COP)")
+        st.write(f"• **Peajes:** ${peajes:,.0f} COP")
+        st.metric("Total Estimado", f"${(costo_combustible + peajes):,.0f} COP")
+
+    with col_mapa:
+        # Mapa centrado en la ubicación actual del usuario o teléfono
+        m = folium.Map(location=[st.session_state.user_lat, st.session_state.user_lon], zoom_start=12)
+
+        # Marcador ORIGEN (Ubicación actual del teléfono)
         folium.Marker(
-            [poi["lat"], poi["lon"]],
-            popup=f"<b>{poi['nombre']}</b><br>{poi['descripcion']}",
-            tooltip=poi["nombre"],
-            icon=folium.Icon(color=color_icono, icon="star" if poi["destacado"] else "info-sign")
+            location=[st.session_state.user_lat, st.session_state.user_lon],
+            popup="<b>Tu Ubicación Actual</b>",
+            tooltip="Origen (Tú)",
+            icon=folium.Icon(color="green", icon="user", prefix="fa")
         ).add_to(m)
 
-    # Dibujar Reportes de Comunidad
-    for rep in st.session_state.reportes_comunidad:
+        # Marcador DESTINO
         folium.Marker(
-            [rep["lat"], rep["lon"]],
-            popup=f"<b>{rep['tipo']}</b><br>{rep['detalle']}",
-            tooltip=f"ALERTA: {rep['tipo']}",
-            icon=folium.Icon(color="orange", icon="warning-sign")
+            location=[dest_lat, dest_lon],
+            popup=f"<b>Destino:</b> {destino_seleccionado}",
+            tooltip=f"Destino: {destino_seleccionado}",
+            icon=folium.Icon(color="red", icon="flag")
         ).add_to(m)
 
-    st_folium(m, width=1100, height=520)
+        # Línea de Navegación / Ruta
+        color_linea = "red" if alerta_galibo else "blue"
+        puntos_ruta = [
+            [st.session_state.user_lat, st.session_state.user_lon],
+            [(st.session_state.user_lat + dest_lat) / 2, (st.session_state.user_lon + dest_lon) / 2],
+            [dest_lat, dest_lon]
+        ]
+        folium.PolyLine(puntos_ruta, color=color_linea, weight=6, opacity=0.8, tooltip="Ruta de Carga").add_to(m)
 
-    # Convenciones del Mapa
-    col_l1, col_l2, col_l3 = st.columns(3)
-    col_l1.markdown("🟢 **Vía Permitida:** Apta para tu vehículo")
-    col_l2.markdown("🔴 **Vía Restringida:** Riesgo de choque o fotomulta")
-    col_l3.markdown("🟠 **Icono Naranja:** Alerta de comunidad en vivo")
+        # Mostrar POIs
+        if mostrar_pois:
+            for p in pois_data:
+                folium.Marker(
+                    location=[p["lat"], p["lon"]],
+                    popup=f"<b>{p['nombre']}</b><br>{p['detalles']}",
+                    tooltip=f"{p['tipo']}: {p['nombre']}",
+                    icon=folium.Icon(color="cadetblue", icon="info-sign")
+                ).add_to(m)
 
-# -----------------------------------------------------------------------------
-# 6. MÓDULO 2: REPORTES EN TIEMPO REAL (ESTILO WAZE)
-# -----------------------------------------------------------------------------
-elif menu == "⚠️ Reportar Novedad (Comunidad)":
-    st.title("Reporte de Novedades en Vía")
-    st.write("Apoya a otros conductores notificando incidentes sobre los corredores viales.")
+        # Mostrar Restricciones
+        if mostrar_restricciones:
+            for r in restricciones_data:
+                folium.Marker(
+                    location=[r["lat"], r["lon"]],
+                    popup=f"<b>{r['nombre']}</b><br>{r['detalles']}",
+                    tooltip=f"Restricción: {r['nombre']}",
+                    icon=folium.Icon(color="orange", icon="exclamation-sign")
+                ).add_to(m)
 
-    with st.form("form_reporte"):
-        tipo_novedad = st.selectbox("Tipo de Incidente", [
-            "Báscula de Pesaje Activa",
-            "Retén de Movilidad / Tránsito",
-            "Vehículo Varado en Vía",
-            "Cierre Parcial por Obras",
-            "Inundación / Encharcamiento Bajo Puente"
-        ])
-        sector = st.text_input("Ubicación / Referencia (ej. Regional a la altura de Solla)")
-        detalle = st.text_area("Detalle adicional")
-        
-        submit = st.form_submit_button("Publicar Alerta")
-        if submit:
-            # Agrega un reporte con coordenadas genéricas cerca del centro para el prototipo
-            st.session_state.reportes_comunidad.append({
-                "tipo": tipo_novedad,
-                "lat": 6.2500,
-                "lon": -75.5700,
-                "detalle": f"{sector} - {detalle}"
-            })
-            st.success("¡Alerta registrada y visible en el mapa para todos los conductores!")
+        # Mostrar Alertas
+        if mostrar_alertas:
+            for a in alertas_comunidad:
+                folium.Marker(
+                    location=[a["lat"], a["lon"]],
+                    popup=f"<b>{a['tipo']}</b><br>{a['descripcion']}",
+                    tooltip=f"Alerta: {a['tipo']}",
+                    icon=folium.Icon(color="darkred", icon="warning-sign")
+                ).add_to(m)
 
-# -----------------------------------------------------------------------------
-# 7. MÓDULO 3: REGISTRO DE COMERCIOS (MONETIZACIÓN)
-# -----------------------------------------------------------------------------
-elif menu == "🏬 Registro de Comercios":
-    st.title("Plataforma para Comercios Viales")
-    st.write("Registra tu parqueadero, restaurante u hotel para aparecer destacado en las rutas de los transportadores de carga.")
+        st_folium(m, width=800, height=550)
 
-    with st.form("form_comercio"):
-        nombre_negocio = st.text_input("Nombre del Establecimiento")
-        tipo_servicio = st.selectbox("Tipo de Servicio", ["Parqueadero de Carga", "Restaurante con Parqueo", "Hotel con Bahía", "Taller / Montallantas"])
-        latitud = st.number_input("Latitud GPS", value=6.2442, format="%.4f")
-        longitud = st.number_input("Longitud GPS", value=-75.5736, format="%.4f")
-        descripcion = st.text_area("Servicios offered (ej. Parqueadero vigilado, duchas, menú ejecutivo)")
-        es_patrocinado = st.checkbox("Activar Plan Destacado Dorado ($50.000 COP/mes)")
-
-        submit_comercio = st.form_submit_button("Guardar Establecimiento")
-        if submit_comercio:
-            st.session_state.puntos_interes.append({
-                "nombre": nombre_negocio,
-                "tipo": tipo_servicio,
-                "lat": latitud,
-                "lon": longitud,
-                "destacado": es_patrocinado,
-                "descripcion": descripcion
-            })
-            st.success(f"¡Establecimiento '{nombre_negocio}' agregado con éxito al mapa de rutas!")
-
-# -----------------------------------------------------------------------------
-# 8. MÓDULO 4: SUSCRIPCIÓN Y MODELO COMERCIAL
-# -----------------------------------------------------------------------------
-elif menu == "💳 Suscripción & Comercial":
-    st.title("Planes de Suscripción y Monetización")
-    
+# --- MÓDULO 2: COMUNIDAD ---
+elif "Reportar" in opcion_menu:
+    st.subheader("📢 Reportar Novedad en la Vía")
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("Plan Transportador")
-        st.write("### $25.000 COP / mes")
-        st.markdown("""
-        - Calculadora ilimitada de gálibo y peso
-        - Alertas en tiempo real de básculas y retenes
-        - Descuentos en restaurantes y parqueaderos aliados
-        """)
-        if st.button("Activar Suscripción Conductor"):
-            st.info("Simulación: Conectando con MercadoPago / Wompi...")
-
+        tipo_novedad = st.selectbox("Tipo de Alerta", ["Fotomulta Móvil", "Accidente / Vía Cerrada", "Retén de Control", "Vía en Mal Estado"])
+        sector = st.text_input("Sector / Referencia", placeholder="Ej: Autopista Sur a la altura de Itagüí")
     with col2:
-        st.subheader("Plan Flotas / Generadores de Carga")
-        st.write("### $200.000 COP / mes")
-        st.markdown("""
-        - Monitoreo de hasta 15 vehículos simultáneos
-        - Historial de costos operacionales (ACPM/Peajes)
-        - Integración directa con decretos municipales de tránsito
-        """)
-        if st.button("Activar Suscripción Empresa"):
-            st.info("Simulación: Redirigiendo a pasarela corporativa...")
+        detalles = st.text_area("Detalles para la comunidad", placeholder="Describa la situación...")
+    if st.button("Enviar Alerta"):
+        st.success("✅ Alerta compartida en tiempo real con la red de conductores.")
+
+# --- MÓDULO 3: COMERCIOS ---
+elif "Registro" in opcion_menu:
+    st.subheader("🏪 Registra tu Comercio en la Red RutaCarga")
+    with st.form("form_comercio"):
+        nombre = st.text_input("Nombre del Establecimiento")
+        categoria = st.selectbox("Categoría", ["Parqueadero Carga Pesada", "Restaurante con Parqueo", "Taller Mecánico", "Estación de Servicio"])
+        contacto = st.text_input("Teléfono o WhatsApp")
+        if st.form_submit_button("Solicitar Registro"):
+            st.success("✅ Solicitud enviada. Te contactaremos pronto.")
+
+# --- MÓDULO 4: PLANES ---
+elif "Planes" in opcion_menu:
+    st.subheader("💳 Planes de Suscripción y Monetización")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.info("### 🚛 Para Empresas y Flotas\n• Navegación GPS ilimitada con gálibo activo.\n• **$49.000 COP/mes**")
+    with c2:
+        st.success("### 🏪 Para Comercios en Ruta\n• Destaca tu negocio en el mapa interactivo.\n• **$89.000 COP/mes**")
