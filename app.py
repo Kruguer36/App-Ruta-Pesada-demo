@@ -12,7 +12,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Inicialización de estado
+# --- INICIALIZACIÓN DE ESTADOS GLOBALES ---
 if "puntos_opcionales" not in st.session_state:
     st.session_state.puntos_opcionales = []
 if "rutas_calculadas" not in st.session_state:
@@ -23,7 +23,13 @@ if "paso_actual" not in st.session_state:
     st.session_state.paso_actual = 0
 if "simulando" not in st.session_state:
     st.session_state.simulando = False
+if "despachos" not in st.session_state:
+    st.session_state.despachos = [
+        {"id": "DSP-001", "origen": "Medellín", "destino": "Bogotá", "vehiculo": "Tractomula", "conductor": "Carlos Pérez", "fecha": "2026-09-20", "hora": "06:00", "estado": "Programado"},
+        {"id": "DSP-002", "origen": "Cali", "destino": "Buenaventura", "vehiculo": "Turbo", "conductor": "Martha Gómez", "fecha": "2026-09-21", "hora": "08:30", "estado": "En Tránsito"}
+    ]
 
+# --- FUNCIONES AUXILIARES DE RUTAS Y GEOCODIFICACIÓN ---
 def normalizar_texto(texto):
     reemplazos = {"cra": "Carrera", "cll": "Calle", "av": "Avenida"}
     palabras = [reemplazos.get(p.lower().replace(".", ""), p) for p in texto.split()]
@@ -68,25 +74,43 @@ def calcular_rutas_osrm(pt_a, pt_b, intermedios):
                         "distancia": dist_km,
                         "tiempo": dur_min,
                         "instrucciones": instrucciones,
-                        "nombre": f"Ruta {idx+1} ({'Principal' if idx==0 else 'Alternativa'})"
+                        "nombre": f"Ruta {idx+1} ({'Principal' if idx==0 else 'Alternativa 2da Opción'})"
                     })
                 return rutas
     except Exception:
         pass
     return []
 
-# Menú lateral
+# --- BARRA LATERAL (MENÚ Y PERSONALIZACIÓN DE MAPA) ---
 st.sidebar.title("🚚 RutaCarga Colombia")
-modulo = st.sidebar.radio("Módulo:", ["1. Navegador GPS", "2. Programador", "3. Reportes"])
+modulo = st.sidebar.radio("Seleccione Módulo:", ["1. Navegador GPS", "2. Programador", "3. Reportes"])
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("🎨 Estilo de Mapa")
+map_style_option = st.sidebar.selectbox(
+    "Fondo del Mapa:",
+    ["Oscuro (Dark)", "Claro (Light)", "Callejero (Roads)", "Exteriores (Outdoors)"]
+)
+
+map_styles = {
+    "Oscuro (Dark)": pdk.map_styles.DARK,
+    "Claro (Light)": pdk.map_styles.LIGHT,
+    "Callejero (Roads)": pdk.map_styles.ROAD,
+    "Exteriores (Outdoors)": pdk.map_styles.OUTDOORS
+}
+estilo_mapa_seleccionado = map_styles[map_style_option]
+
+
+# ==============================================================================
+# MÓDULO 1: NAVEGADOR GPS
+# ==============================================================================
 if modulo == "1. Navegador GPS":
-    st.header("🧭 Navegador GPS Colombia (Demostración de Navegación)")
+    st.header("🧭 Navegador GPS Colombia")
 
-    # ESTRUCTURA EN PARALELO
     col_izquierda, col_derecha = st.columns([1, 1.2], gap="large")
 
     with col_izquierda:
-        st.subheader("📋 Configuración y Controles del Demo")
+        st.subheader("📋 Configuración y Controles")
         
         vehiculo = st.selectbox("🚚 Tipo de Vehículo", ["Carro", "Turbo", "Camión", "Tractomula"])
         input_a = st.text_input("🟢 Origen (Punto A)", value="Envigado, Antioquia")
@@ -115,15 +139,27 @@ if modulo == "1. Navegador GPS":
                     st.session_state.simulando = False
                     st.rerun()
 
-        # CONTROLES DE REPRODUCCIÓN AUTOMÁTICA EN EL DEMO
+        # SELECCIÓN DE RUTA ALTERNA Y CONTROLES
         if st.session_state.rutas_calculadas:
             st.markdown("---")
-            st.subheader("▶️ Botones de Navegación")
+            st.subheader("🔀 Rutas Encontradas")
             
-            ruta_activa = st.session_state.rutas_calculadas[st.session_state.ruta_activa_idx]
-            coords = ruta_activa["geometria"]
+            nombres_rutas = [r["nombre"] for r in st.session_state.rutas_calculadas]
+            idx_seleccionado = st.radio(
+                "Seleccione la ruta a seguir:",
+                range(len(nombres_rutas)),
+                format_func=lambda x: nombres_rutas[x]
+            )
+            if idx_seleccionado != st.session_state.ruta_activa_idx:
+                st.session_state.ruta_activa_idx = idx_seleccionado
+                st.session_state.paso_actual = 0
+                st.session_state.simulando = False
 
-            st.info(f"Distancia: {ruta_activa['distancia']:.1f} km | Tiempo: {ruta_activa['tiempo']/60:.1f} hrs")
+            ruta_activa = st.session_state.rutas_calculadas[st.session_state.ruta_activa_idx]
+            st.info(f"**Distancia:** {ruta_activa['distancia']:.1f} km | **Tiempo:** {ruta_activa['tiempo']/60:.1f} hrs")
+
+            st.markdown("---")
+            st.subheader("▶️ Botones de Navegación")
 
             col_b1, col_b2, col_b3 = st.columns(3)
             if col_b1.button("▶️ Iniciar", use_container_width=True):
@@ -134,7 +170,6 @@ if modulo == "1. Navegador GPS":
                 st.session_state.paso_actual = 0
                 st.session_state.simulando = False
 
-            st.markdown("---")
             velocidad = st.slider("⚡ Velocidad de Simulación", min_value=1, max_value=10, value=3)
 
             if st.button("🧹 Limpiar Tablero Completo", use_container_width=True):
@@ -146,38 +181,44 @@ if modulo == "1. Navegador GPS":
 
     with col_derecha:
         st.subheader("🗺️ Vista en Vivo del Vehículo")
-        
-        # Contenedor dinámico que evita parpadeos y congelamientos
         mapa_placeholder = st.empty()
         
         def renderizar_mapa(paso_idx):
+            layers = []
+            
+            # Dibujar todas las rutas (Alternativa en gris/azul, Activa en rojo)
+            for i, r in enumerate(st.session_state.rutas_calculadas):
+                es_activa = (i == st.session_state.ruta_activa_idx)
+                layers.append(
+                    pdk.Layer(
+                        "PathLayer",
+                        data=[{"path": r["geometria"]}],
+                        get_path="path",
+                        get_color=[255, 0, 0, 220] if es_activa else [100, 150, 200, 160],
+                        width_min_pixels=6 if es_activa else 3,
+                    )
+                )
+
             ruta_activa = st.session_state.rutas_calculadas[st.session_state.ruta_activa_idx]
             coords = ruta_activa["geometria"]
             pos_actual = coords[paso_idx]
 
             idx_instr = min(int((paso_idx / len(coords)) * len(ruta_activa["instrucciones"])), len(ruta_activa["instrucciones"]) - 1)
             
-            # Capa de la trayectoria en rojo
-            capa_ruta = pdk.Layer(
-                "PathLayer",
-                data=[{"path": coords}],
-                get_path="path",
-                get_color=[255, 0, 0, 200],
-                width_min_pixels=5,
-            )
-
-            # Capa del marcador del vehículo en color amarillo brillante resaltado
+            # Capa del vehículo (Marcador amarillo)
             df_cursor = pd.DataFrame([{"lon": pos_actual[0], "lat": pos_actual[1]}])
-            capa_cursor = pdk.Layer(
-                "ScatterplotLayer",
-                data=df_cursor,
-                get_position=["lon", "lat"],
-                get_color=[255, 215, 0, 255],
-                get_radius=120,
-                radius_min_pixels=14,
-                stroked=True,
-                get_line_color=[0, 0, 0, 255],
-                line_width_min_pixels=3
+            layers.append(
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    data=df_cursor,
+                    get_position=["lon", "lat"],
+                    get_color=[255, 215, 0, 255],
+                    get_radius=120,
+                    radius_min_pixels=14,
+                    stroked=True,
+                    get_line_color=[0, 0, 0, 255],
+                    line_width_min_pixels=3
+                )
             )
 
             view_state = pdk.ViewState(
@@ -188,13 +229,12 @@ if modulo == "1. Navegador GPS":
             )
 
             with mapa_placeholder.container():
-                st.warning(f"📍 Estado: {ruta_activa['instrucciones'][idx_instr]} (Paso {paso_idx + 1} de {len(coords)})")
-                st.pydeck_chart(pdk.Deck(layers=[capa_ruta, capa_cursor], initial_view_state=view_state))
+                st.warning(f"📍 Estado ({ruta_activa['nombre']}): {ruta_activa['instrucciones'][idx_instr]}")
+                st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view_state, map_style=estilo_mapa_seleccionado))
 
         if st.session_state.rutas_calculadas:
             renderizar_mapa(st.session_state.paso_actual)
             
-            # Ejecución fluida de la animación cuando presiones "Iniciar"
             if st.session_state.simulando:
                 ruta_activa = st.session_state.rutas_calculadas[st.session_state.ruta_activa_idx]
                 coords = ruta_activa["geometria"]
@@ -209,4 +249,76 @@ if modulo == "1. Navegador GPS":
                     time.sleep(0.05)
         else:
             view_state_def = pdk.ViewState(longitude=-74.1, latitude=4.6, zoom=5)
-            mapa_placeholder.pydeck_chart(pdk.Deck(initial_view_state=view_state_def))
+            mapa_placeholder.pydeck_chart(pdk.Deck(initial_view_state=view_state_def, map_style=estilo_mapa_seleccionado))
+
+
+# ==============================================================================
+# MÓDULO 2: PROGRAMADOR
+# ==============================================================================
+elif modulo == "2. Programador":
+    st.header("📅 Programador de Despachos y Rutas")
+    
+    col_p1, col_p2 = st.columns([1, 1.5], gap="large")
+    
+    with col_p1:
+        st.subheader("📝 Agendar Nuevo Despacho")
+        p_origen = st.text_input("Ciudad de Origen", value="Medellín")
+        p_destino = st.text_input("Ciudad de Destino", value="Cartagena")
+        p_vehiculo = st.selectbox("Tipo de Vehículo", ["Tractomula", "Camión", "Turbo", "Carro"])
+        p_conductor = st.selectbox("Asignar Conductor", ["Carlos Pérez", "Martha Gómez", "Juan Rodríguez", "Andrés López"])
+        p_fecha = st.date_input("Fecha de Salida")
+        p_hora = st.time_input("Hora de Salida")
+        
+        if st.button("➕ Agendar Despacho", type="primary", use_container_width=True):
+            nuevo_id = f"DSP-00{len(st.session_state.despachos) + 1}"
+            st.session_state.despachos.append({
+                "id": nuevo_id,
+                "origen": p_origen,
+                "destino": p_destino,
+                "vehiculo": p_vehiculo,
+                "conductor": p_conductor,
+                "fecha": str(p_fecha),
+                "hora": str(p_hora),
+                "estado": "Programado"
+            })
+            st.success(f"Despacho {nuevo_id} agendado correctamente.")
+
+    with col_p2:
+        st.subheader("📋 Lista de Despachos Agendados")
+        df_despachos = pd.DataFrame(st.session_state.despachos)
+        st.dataframe(df_despachos, use_container_width=True)
+
+
+# ==============================================================================
+# MÓDULO 3: REPORTES
+# ==============================================================================
+elif modulo == "3. Reportes":
+    st.header("📊 Reportes Operativos y Métricas")
+    
+    # KPIs
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    kpi1.metric("Total Viajes Realizados", "142", "+12%")
+    kpi2.metric("Distancia Recorrida", "38,450 km", "+8%")
+    kpi3.metric("Consumo Combustible", "3,845 Gal", "-3%")
+    kpi4.metric("Eficiencia de Entregas", "96.4%", "+2.1%")
+    
+    st.markdown("---")
+    
+    col_r1, col_r2 = st.columns(2)
+    
+    with col_r1:
+        st.subheader("📈 Consumo Estimado por Tipo de Vehículo")
+        datos_consumo = pd.DataFrame({
+            "Vehículo": ["Carro", "Turbo", "Camión", "Tractomula"],
+            "Galones por 100km": [3.5, 7.2, 12.0, 18.5]
+        })
+        st.bar_chart(datos_consumo.set_index("Vehículo"))
+        
+    with col_r2:
+        st.subheader("📑 Registro Histórico de Operaciones")
+        datos_historicos = pd.DataFrame([
+            {"Fecha": "2026-09-15", "Ruta": "Envigado -> Bogotá", "Vehículo": "Tractomula", "Tiempo (hrs)": 10.2, "Estado": "Completado"},
+            {"Fecha": "2026-09-16", "Ruta": "Medellín -> Cali", "Vehículo": "Camión", "Tiempo (hrs)": 8.5, "Estado": "Completado"},
+            {"Fecha": "2026-09-17", "Ruta": "Bogotá -> Bucaramanga", "Vehículo": "Turbo", "Tiempo (hrs)": 7.1, "Estado": "Completado"},
+        ])
+        st.table(datos_historicos)
