@@ -92,11 +92,12 @@ map_style_option = st.sidebar.selectbox(
     ["Oscuro (Dark)", "Claro (Light)", "Callejero (Roads)", "Exteriores (Outdoors)"]
 )
 
+# Cadenas de texto compatibles con PyDeck
 map_styles = {
-    "Oscuro (Dark)": pdk.map_styles.DARK,
-    "Claro (Light)": pdk.map_styles.LIGHT,
-    "Callejero (Roads)": pdk.map_styles.ROAD,
-    "Exteriores (Outdoors)": pdk.map_styles.OUTDOORS
+    "Oscuro (Dark)": "dark",
+    "Claro (Light)": "light",
+    "Callejero (Roads)": "road",
+    "Exteriores (Outdoors)": "outdoors"
 }
 estilo_mapa_seleccionado = map_styles[map_style_option]
 
@@ -186,7 +187,7 @@ if modulo == "1. Navegador GPS":
         def renderizar_mapa(paso_idx):
             layers = []
             
-            # Dibujar todas las rutas (Alternativa en gris/azul, Activa en rojo)
+            # Trazar rutas calculadas
             for i, r in enumerate(st.session_state.rutas_calculadas):
                 es_activa = (i == st.session_state.ruta_activa_idx)
                 layers.append(
@@ -205,7 +206,7 @@ if modulo == "1. Navegador GPS":
 
             idx_instr = min(int((paso_idx / len(coords)) * len(ruta_activa["instrucciones"])), len(ruta_activa["instrucciones"]) - 1)
             
-            # Capa del vehículo (Marcador amarillo)
+            # Marcador del vehículo
             df_cursor = pd.DataFrame([{"lon": pos_actual[0], "lat": pos_actual[1]}])
             layers.append(
                 pdk.Layer(
@@ -295,7 +296,6 @@ elif modulo == "2. Programador":
 elif modulo == "3. Reportes":
     st.header("📊 Reportes Operativos y Métricas")
     
-    # KPIs
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     kpi1.metric("Total Viajes Realizados", "142", "+12%")
     kpi2.metric("Distancia Recorrida", "38,450 km", "+8%")
