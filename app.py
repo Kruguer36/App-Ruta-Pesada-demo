@@ -1,4 +1,5 @@
 import json
+import time
 import urllib.parse
 import urllib.request
 import pandas as pd
@@ -11,13 +12,17 @@ st.set_page_config(
     layout="wide"
 )
 
-# Inicialización de estados
+# Inicialización de estado
 if "puntos_opcionales" not in st.session_state:
     st.session_state.puntos_opcionales = []
 if "rutas_calculadas" not in st.session_state:
     st.session_state.rutas_calculadas = []
 if "ruta_activa_idx" not in st.session_state:
     st.session_state.ruta_activa_idx = 0
+if "paso_actual" not in st.session_state:
+    st.session_state.paso_actual = 0
+if "simulando" not in st.session_state:
+    st.session_state.simulando = False
 
 def normalizar_texto(texto):
     reemplazos = {"cra": "Carrera", "cll": "Calle", "av": "Avenida"}
@@ -70,20 +75,20 @@ def calcular_rutas_osrm(pt_a, pt_b, intermedios):
         pass
     return []
 
-# Sidebar
+# Menú lateral
 st.sidebar.title("🚚 RutaCarga Colombia")
 modulo = st.sidebar.radio("Módulo:", ["1. Navegador GPS", "2. Programador", "3. Reportes"])
 
 if modulo == "1. Navegador GPS":
-    st.header("🧭 Navegador GPS Colombia")
+    st.header("🧭 Navegador GPS Colombia (Demostración de Navegación)")
 
-    # DISTRIBUCIÓN EN PARALELO (COLUMNA IZQUIERDA Y DERECHA)
+    # ESTRUCTURA EN PARALELO
     col_izquierda, col_derecha = st.columns([1, 1.2], gap="large")
 
     with col_izquierda:
-        st.subheader("📋 Configuración y Controles")
+        st.subheader("📋 Configuración y Controles del Demo")
         
-        vehiculo = st.selectbox("🚚 Vehículo", ["Carro", "Turbo", "Camión", "Tractomula"])
+        vehiculo = st.selectbox("🚚 Tipo de Vehículo", ["Carro", "Turbo", "Camión", "Tractomula"])
         input_a = st.text_input("🟢 Origen (Punto A)", value="Envigado, Antioquia")
         input_b = st.text_input("🔴 Destino (Punto B)", value="Bogota, Cundinamarca")
         
@@ -106,45 +111,53 @@ if modulo == "1. Navegador GPS":
                 if rutas:
                     st.session_state.rutas_calculadas = rutas
                     st.session_state.ruta_activa_idx = 0
+                    st.session_state.paso_actual = 0
+                    st.session_state.simulando = False
                     st.rerun()
 
-        # CONTROLES Y LIMPIEZA EN PARALELO
+        # CONTROLES DE REPRODUCCIÓN AUTOMÁTICA EN EL DEMO
         if st.session_state.rutas_calculadas:
             st.markdown("---")
-            st.subheader("🎛️ Controles de Simulación")
+            st.subheader("▶️ Botones de Navegación")
             
             ruta_activa = st.session_state.rutas_calculadas[st.session_state.ruta_activa_idx]
             coords = ruta_activa["geometria"]
 
             st.info(f"Distancia: {ruta_activa['distancia']:.1f} km | Tiempo: {ruta_activa['tiempo']/60:.1f} hrs")
 
-            # Deslizador suave para evitar congelamientos de pantalla
-            paso = st.slider(
-                "📍 Posición del Vehículo a lo largo de la ruta",
-                min_value=0,
-                max_value=len(coords) - 1,
-                value=0,
-                step=1
-            )
-            
-            if st.button("🧹 Limpiar Todo el Tablero", use_container_width=True):
+            col_b1, col_b2, col_b3 = st.columns(3)
+            if col_b1.button("▶️ Iniciar", use_container_width=True):
+                st.session_state.simulando = True
+            if col_b2.button("⏸️ Pausar", use_container_width=True):
+                st.session_state.simulando = False
+            if col_b3.button("🔄 Reiniciar", use_container_width=True):
+                st.session_state.paso_actual = 0
+                st.session_state.simulando = False
+
+            st.markdown("---")
+            velocidad = st.slider("⚡ Velocidad de Simulación", min_value=1, max_value=10, value=3)
+
+            if st.button("🧹 Limpiar Tablero Completo", use_container_width=True):
                 st.session_state.puntos_opcionales.clear()
                 st.session_state.rutas_calculadas.clear()
+                st.session_state.paso_actual = 0
+                st.session_state.simulando = False
                 st.rerun()
 
     with col_derecha:
-        st.subheader("🗺️ Vista de Mapa y Rastreo")
+        st.subheader("🗺️ Vista en Vivo del Vehículo")
         
-        if st.session_state.rutas_calculadas:
+        # Contenedor dinámico que evita parpadeos y congelamientos
+        mapa_placeholder = st.empty()
+        
+        def renderizar_mapa(paso_idx):
             ruta_activa = st.session_state.rutas_calculadas[st.session_state.ruta_activa_idx]
             coords = ruta_activa["geometria"]
-            pos_actual = coords[paso]
+            pos_actual = coords[paso_idx]
 
-            # Indicador de estado del punto
-            idx_instr = min(int((paso / len(coords)) * len(ruta_activa["instrucciones"])), len(ruta_activa["instrucciones"]) - 1)
-            st.warning(f"📍 Posición actual: {ruta_activa['instrucciones'][idx_instr]}")
-
-            # Capas del mapa
+            idx_instr = min(int((paso_idx / len(coords)) * len(ruta_activa["instrucciones"])), len(ruta_activa["instrucciones"]) - 1)
+            
+            # Capa de la trayectoria en rojo
             capa_ruta = pdk.Layer(
                 "PathLayer",
                 data=[{"path": coords}],
@@ -153,15 +166,15 @@ if modulo == "1. Navegador GPS":
                 width_min_pixels=5,
             )
 
-            # Capa del vehículo (Círculo rojo brillante resaltado)
+            # Capa del marcador del vehículo en color amarillo brillante resaltado
             df_cursor = pd.DataFrame([{"lon": pos_actual[0], "lat": pos_actual[1]}])
             capa_cursor = pdk.Layer(
                 "ScatterplotLayer",
                 data=df_cursor,
                 get_position=["lon", "lat"],
-                get_color=[255, 215, 0, 255], # Color dorado brillante
-                get_radius=80,
-                radius_min_pixels=12,
+                get_color=[255, 215, 0, 255],
+                get_radius=120,
+                radius_min_pixels=14,
                 stroked=True,
                 get_line_color=[0, 0, 0, 255],
                 line_width_min_pixels=3
@@ -174,7 +187,26 @@ if modulo == "1. Navegador GPS":
                 pitch=30
             )
 
-            st.pydeck_chart(pdk.Deck(layers=[capa_ruta, capa_cursor], initial_view_state=view_state))
+            with mapa_placeholder.container():
+                st.warning(f"📍 Estado: {ruta_activa['instrucciones'][idx_instr]} (Paso {paso_idx + 1} de {len(coords)})")
+                st.pydeck_chart(pdk.Deck(layers=[capa_ruta, capa_cursor], initial_view_state=view_state))
+
+        if st.session_state.rutas_calculadas:
+            renderizar_mapa(st.session_state.paso_actual)
+            
+            # Ejecución fluida de la animación cuando presiones "Iniciar"
+            if st.session_state.simulando:
+                ruta_activa = st.session_state.rutas_calculadas[st.session_state.ruta_activa_idx]
+                coords = ruta_activa["geometria"]
+                
+                while st.session_state.paso_actual < len(coords) - 1 and st.session_state.simulando:
+                    st.session_state.paso_actual += velocidad
+                    if st.session_state.paso_actual >= len(coords):
+                        st.session_state.paso_actual = len(coords) - 1
+                        st.session_state.simulando = False
+                    
+                    renderizar_mapa(st.session_state.paso_actual)
+                    time.sleep(0.05)
         else:
             view_state_def = pdk.ViewState(longitude=-74.1, latitude=4.6, zoom=5)
-            st.pydeck_chart(pdk.Deck(initial_view_state=view_state_def))
+            mapa_placeholder.pydeck_chart(pdk.Deck(initial_view_state=view_state_def))
